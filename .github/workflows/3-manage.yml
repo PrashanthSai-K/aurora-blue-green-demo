@@ -125,8 +125,26 @@ jobs:
 
       # ── rollback pre-flight ───────────────────────────────────────────────
       - name: Rollback pre-flight — set new prod read-only, wait for lag = 0
-        if: inputs.action == 'rollback' && steps.state.outputs.rollback_source == '' && steps.state.outputs.rollback_completed != 'true'
-        run: bash scripts/pre_proxy_flip.sh
+        if: inputs.action == 'rollback'
+        run: |
+          # Skip pre-flight if a prior run already renamed the clusters:
+          #   rollback_source != ""  → Step 1 done (new prod already renamed to -new1)
+          #   old-1 cluster absent   → full rollback done (old1 renamed back to original)
+          ROLLBACK_SOURCE="${{ steps.state.outputs.rollback_source }}"
+          if [ -n "$ROLLBACK_SOURCE" ]; then
+            echo "[bgonly-03] rollback_source=$ROLLBACK_SOURCE — Step 1 already done, skipping pre-flight."
+            exit 0
+          fi
+          OLD1_EXISTS=$(aws rds describe-db-clusters \
+            --db-cluster-identifier "${{ inputs.aurora_cluster_name }}-old1" \
+            --region "${{ inputs.aws_region }}" \
+            --query 'DBClusters[0].DBClusterIdentifier' \
+            --output text 2>/dev/null || echo "")
+          if [ -z "$OLD1_EXISTS" ] || [ "$OLD1_EXISTS" = "None" ]; then
+            echo "[bgonly-03] ${{ inputs.aurora_cluster_name }}-old1 not found in AWS — rollback already completed, skipping pre-flight."
+            exit 0
+          fi
+          bash scripts/pre_proxy_flip.sh
         env:
           PROXY_ACTIVE:        old
           OLD_CLUSTER_ID:      ${{ inputs.aurora_cluster_name }}-old1
@@ -134,18 +152,6 @@ jobs:
           AWS_REGION:          ${{ inputs.aws_region }}
           DB_SECRET_NAME:      ${{ steps.state.outputs.db_secret_arn }}
           BASTION_INSTANCE_ID: ${{ steps.state.outputs.bastion_id }}
-
-      - name: Pre-flight skipped — partial rollback in progress
-        if: inputs.action == 'rollback' && steps.state.outputs.rollback_source != ''
-        run: |
-          echo "[bgonly-03] rollback_source_cluster_id = ${{ steps.state.outputs.rollback_source }}"
-          echo "[bgonly-03] Step 1 already completed on a prior run — skipping pre-flight."
-
-      - name: Pre-flight skipped — rollback already completed
-        if: inputs.action == 'rollback' && steps.state.outputs.rollback_completed == 'true'
-        run: |
-          echo "[bgonly-03] rollback_completed = true — rename already done, only post-swap needed."
-          echo "[bgonly-03] Skipping pre-flight."
 
       - name: Terraform plan — rollback
         if: inputs.action == 'rollback'
