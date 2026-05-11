@@ -32,6 +32,12 @@ on:
       aurora_cluster_name:
         description: 'Original cluster identifier — used by scripts and for -old1/-new1 naming'
         required: true
+      db_secret_arn:
+        description: 'Secrets Manager ARN holding DB master credentials (used by MySQL scripts)'
+        required: true
+      bastion_instance_id:
+        description: 'EC2 bastion instance ID for SSM MySQL access'
+        required: true
       green_engine_version:
         description: 'Same green_engine_version used in bgonly-01 (blank = same as source)'
         required: false
@@ -55,10 +61,11 @@ jobs:
     name: "Plan / Pre-flight (${{ inputs.action }})"
     runs-on: ubuntu-latest
     outputs:
-      bastion_id:      ${{ steps.state.outputs.bastion_id }}
-      db_secret_arn:   ${{ steps.state.outputs.db_secret_arn }}
-      old_cluster_id:  ${{ steps.state.outputs.old_cluster_id }}
-      rollback_source: ${{ steps.state.outputs.rollback_source }}
+      bastion_id:         ${{ steps.state.outputs.bastion_id }}
+      db_secret_arn:      ${{ steps.state.outputs.db_secret_arn }}
+      old_cluster_id:     ${{ steps.state.outputs.old_cluster_id }}
+      rollback_source:    ${{ steps.state.outputs.rollback_source }}
+      rollback_completed: ${{ steps.state.outputs.rollback_completed }}
 
     steps:
       - name: Checkout
@@ -83,12 +90,15 @@ jobs:
         run: |
           OLD_ID=$(terraform output -raw old_blue_cluster_id 2>/dev/null || echo "")
           ROLLBACK_SOURCE=$(terraform output -raw rollback_source_cluster_id 2>/dev/null || echo "")
-          echo "old_cluster_id=$OLD_ID"          >> $GITHUB_OUTPUT
-          echo "rollback_source=$ROLLBACK_SOURCE" >> $GITHUB_OUTPUT
-          echo "bastion_id=${{ secrets.BASTION_INSTANCE_ID }}"  >> $GITHUB_OUTPUT
-          echo "db_secret_arn=${{ secrets.DB_SECRET_ARN }}"     >> $GITHUB_OUTPUT
-          echo "Old cluster     : ${OLD_ID:-<none>}"
-          echo "Rollback source : ${ROLLBACK_SOURCE:-<none — fresh run>}"
+          ROLLBACK_DONE=$(terraform output -raw rollback_completed 2>/dev/null || echo "false")
+          echo "old_cluster_id=$OLD_ID"                         >> $GITHUB_OUTPUT
+          echo "rollback_source=$ROLLBACK_SOURCE"               >> $GITHUB_OUTPUT
+          echo "rollback_completed=$ROLLBACK_DONE"              >> $GITHUB_OUTPUT
+          echo "bastion_id=${{ inputs.bastion_instance_id }}"   >> $GITHUB_OUTPUT
+          echo "db_secret_arn=${{ inputs.db_secret_arn }}"      >> $GITHUB_OUTPUT
+          echo "Old cluster        : ${OLD_ID:-<none>}"
+          echo "Rollback source    : ${ROLLBACK_SOURCE:-<none — fresh run>}"
+          echo "Rollback completed : $ROLLBACK_DONE"
 
       # ── enable-replication ────────────────────────────────────────────────
       - name: Enable replication — new prod → old blue
@@ -115,7 +125,7 @@ jobs:
 
       # ── rollback pre-flight ───────────────────────────────────────────────
       - name: Rollback pre-flight — set new prod read-only, wait for lag = 0
-        if: inputs.action == 'rollback' && steps.state.outputs.rollback_source == ''
+        if: inputs.action == 'rollback' && steps.state.outputs.rollback_source == '' && steps.state.outputs.rollback_completed != 'true'
         run: bash scripts/pre_proxy_flip.sh
         env:
           PROXY_ACTIVE:        old
@@ -125,11 +135,17 @@ jobs:
           DB_SECRET_NAME:      ${{ steps.state.outputs.db_secret_arn }}
           BASTION_INSTANCE_ID: ${{ steps.state.outputs.bastion_id }}
 
-      - name: Pre-flight skipped — partial rollback detected
+      - name: Pre-flight skipped — partial rollback in progress
         if: inputs.action == 'rollback' && steps.state.outputs.rollback_source != ''
         run: |
           echo "[bgonly-03] rollback_source_cluster_id = ${{ steps.state.outputs.rollback_source }}"
           echo "[bgonly-03] Step 1 already completed on a prior run — skipping pre-flight."
+
+      - name: Pre-flight skipped — rollback already completed
+        if: inputs.action == 'rollback' && steps.state.outputs.rollback_completed == 'true'
+        run: |
+          echo "[bgonly-03] rollback_completed = true — rename already done, only post-swap needed."
+          echo "[bgonly-03] Skipping pre-flight."
 
       - name: Terraform plan — rollback
         if: inputs.action == 'rollback'

@@ -26,6 +26,14 @@ on:
         description: 'Same green_engine_version used in bgonly-01 (blank = same as source)'
         required: false
         default: ''
+      db_secret_arn:
+        description: 'Secrets Manager ARN holding DB master credentials'
+        required: false
+        default: ''
+      bastion_instance_id:
+        description: 'EC2 bastion instance ID for SSM access'
+        required: false
+        default: ''
       tf_state_key:
         description: 'S3 state key — same as bgonly-01'
         required: false

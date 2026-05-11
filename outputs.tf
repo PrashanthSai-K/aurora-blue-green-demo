@@ -27,3 +27,8 @@ output "rollback_source_cluster_id" {
   value       = var.enable_blue_green ? aurora-bluegreen_deployment.main[0].rollback_source_cluster_id : ""
   description = "Non-empty after Step 1 of rollback — signals partial rollback in progress to the workflow"
 }
+
+output "rollback_completed" {
+  value       = var.enable_blue_green ? aurora-bluegreen_deployment.main[0].rollback_completed : false
+  description = "True after name-swap rollback finishes. Workflow skips pre-flight on re-runs when this is true."
+}
