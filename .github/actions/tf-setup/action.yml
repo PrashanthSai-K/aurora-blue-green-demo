@@ -42,6 +42,10 @@ inputs:
     description: 'aurora-bluegreen provider semver'
     required: false
     default: '1.0.0'
+  working_directory:
+    description: 'Directory containing .tf files to init (defaults to repo root)'
+    required: false
+    default: '.'
 
 runs:
   using: "composite"
@@ -103,6 +107,7 @@ runs:
         if [ -n "${{ inputs.tf_state_lock_table }}" ]; then
           LOCK_ARGS="-backend-config=dynamodb_table=${{ inputs.tf_state_lock_table }}"
         fi
+        cd "${{ inputs.working_directory }}"
         terraform init \
           -backend-config="bucket=${{ inputs.tf_state_bucket }}" \
           -backend-config="key=${{ inputs.tf_state_key }}" \

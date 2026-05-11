@@ -40,7 +40,6 @@ env:
   TF_VERSION: "1.9.0"
   GO_VERSION: "1.21"
   PROVIDER_VERSION: "1.0.0"
-  TF_DIR: "bluegreen-standalone"
 
 jobs:
   plan:
@@ -64,11 +63,10 @@ jobs:
           tf_version:            ${{ env.TF_VERSION }}
           go_version:            ${{ env.GO_VERSION }}
           provider_version:      ${{ env.PROVIDER_VERSION }}
-          working_directory:     ${{ env.TF_DIR }}
 
       - name: Terraform Plan
         run: |
-          terraform -chdir="${{ env.TF_DIR }}" plan \
+          terraform plan \
             -var="source_cluster_arn=${{ inputs.source_cluster_arn }}" \
             -var="target_parameter_group_name=${{ inputs.target_parameter_group_name }}" \
             -var="deployment_name=${{ inputs.deployment_name }}" \
@@ -96,7 +94,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-bgonly-create
-          path: ${{ env.TF_DIR }}/tfplan
+          path: tfplan
           retention-days: 1
 
   apply:
@@ -123,22 +121,20 @@ jobs:
           tf_version:            ${{ env.TF_VERSION }}
           go_version:            ${{ env.GO_VERSION }}
           provider_version:      ${{ env.PROVIDER_VERSION }}
-          working_directory:     ${{ env.TF_DIR }}
 
       - name: Download plan artifact
         uses: actions/download-artifact@v4
         with:
           name: tfplan-bgonly-create
-          path: ${{ env.TF_DIR }}
 
       - name: Terraform Apply — Create Green
-        run: terraform -chdir="${{ env.TF_DIR }}" apply -auto-approve tfplan
+        run: terraform apply -auto-approve tfplan
 
       - name: Output Summary
         run: |
-          BG_ID=$(terraform -chdir="${{ env.TF_DIR }}" output -raw blue_green_deployment_id 2>/dev/null || echo "N/A")
-          STATUS=$(terraform -chdir="${{ env.TF_DIR }}" output -raw blue_green_status 2>/dev/null || echo "N/A")
-          GREEN_ARN=$(terraform -chdir="${{ env.TF_DIR }}" output -raw green_cluster_arn 2>/dev/null || echo "")
+          BG_ID=$(terraform output -raw blue_green_deployment_id 2>/dev/null || echo "N/A")
+          STATUS=$(terraform output -raw blue_green_status 2>/dev/null || echo "N/A")
+          GREEN_ARN=$(terraform output -raw green_cluster_arn 2>/dev/null || echo "")
           GREEN_EP="N/A"
           if [ -n "$GREEN_ARN" ] && [ "$GREEN_ARN" != "N/A" ]; then
             TARGET_CLUSTER=$(basename "$GREEN_ARN")

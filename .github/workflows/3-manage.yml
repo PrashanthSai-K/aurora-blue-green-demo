@@ -1,10 +1,10 @@
 name: "BG-Only | 3. Replication & Rollback"
 
 # Four actions:
-#   enable-replication          — sets up binlog replication new prod → old blue (zero-lag rollback)
+#   enable-replication          — sets up binlog replication new prod → old blue
 #   rollback                    — pre-flight lag check + name-swap rollback via terraform
 #   delete-cluster-after-rollback — deletes the <orig>-new1 cluster after rollback
-#   delete-old-cluster          — deletes the old blue cluster (happy path, no rollback needed)
+#   delete-old-cluster          — deletes the old blue cluster (happy path, no rollback)
 
 on:
   workflow_dispatch:
@@ -30,7 +30,7 @@ on:
         required: true
         default: 'aurora-bg'
       aurora_cluster_name:
-        description: 'Original cluster name (identifier) — used by scripts and for -old1/-new1 naming'
+        description: 'Original cluster identifier — used by scripts and for -old1/-new1 naming'
         required: true
       green_engine_version:
         description: 'Same green_engine_version used in bgonly-01 (blank = same as source)'
@@ -49,16 +49,15 @@ env:
   TF_VERSION: "1.9.0"
   GO_VERSION: "1.21"
   PROVIDER_VERSION: "1.0.0"
-  TF_DIR: "bluegreen-standalone"
 
 jobs:
   plan:
     name: "Plan / Pre-flight (${{ inputs.action }})"
     runs-on: ubuntu-latest
     outputs:
-      bastion_id:     ${{ steps.state.outputs.bastion_id }}
-      db_secret_arn:  ${{ steps.state.outputs.db_secret_arn }}
-      old_cluster_id: ${{ steps.state.outputs.old_cluster_id }}
+      bastion_id:      ${{ steps.state.outputs.bastion_id }}
+      db_secret_arn:   ${{ steps.state.outputs.db_secret_arn }}
+      old_cluster_id:  ${{ steps.state.outputs.old_cluster_id }}
       rollback_source: ${{ steps.state.outputs.rollback_source }}
 
     steps:
@@ -78,34 +77,30 @@ jobs:
           tf_version:            ${{ env.TF_VERSION }}
           go_version:            ${{ env.GO_VERSION }}
           provider_version:      ${{ env.PROVIDER_VERSION }}
-          working_directory:     ${{ env.TF_DIR }}
 
       - name: Read state
         id: state
         run: |
-          OLD_ID=$(terraform -chdir="${{ env.TF_DIR }}" output -raw old_blue_cluster_id 2>/dev/null || echo "")
-          ROLLBACK_SOURCE=$(terraform -chdir="${{ env.TF_DIR }}" output -raw rollback_source_cluster_id 2>/dev/null || echo "")
-          BASTION="${{ secrets.BASTION_INSTANCE_ID }}"
-          DB_SECRET="${{ secrets.DB_SECRET_ARN }}"
-
-          echo "old_cluster_id=$OLD_ID"           >> $GITHUB_OUTPUT
-          echo "rollback_source=$ROLLBACK_SOURCE"  >> $GITHUB_OUTPUT
-          echo "bastion_id=$BASTION"               >> $GITHUB_OUTPUT
-          echo "db_secret_arn=$DB_SECRET"          >> $GITHUB_OUTPUT
-          echo "Old cluster       : ${OLD_ID:-<none>}"
-          echo "Rollback source   : ${ROLLBACK_SOURCE:-<none — fresh run>}"
+          OLD_ID=$(terraform output -raw old_blue_cluster_id 2>/dev/null || echo "")
+          ROLLBACK_SOURCE=$(terraform output -raw rollback_source_cluster_id 2>/dev/null || echo "")
+          echo "old_cluster_id=$OLD_ID"          >> $GITHUB_OUTPUT
+          echo "rollback_source=$ROLLBACK_SOURCE" >> $GITHUB_OUTPUT
+          echo "bastion_id=${{ secrets.BASTION_INSTANCE_ID }}"  >> $GITHUB_OUTPUT
+          echo "db_secret_arn=${{ secrets.DB_SECRET_ARN }}"     >> $GITHUB_OUTPUT
+          echo "Old cluster     : ${OLD_ID:-<none>}"
+          echo "Rollback source : ${ROLLBACK_SOURCE:-<none — fresh run>}"
 
       # ── enable-replication ────────────────────────────────────────────────
       - name: Enable replication — new prod → old blue
         if: inputs.action == 'enable-replication'
         run: bash scripts/enable_replication.sh
         env:
-          PROXY_ACTIVE:          new
-          OLD_CLUSTER_ID:        ${{ steps.state.outputs.old_cluster_id }}
-          NEW_CLUSTER_ID:        ${{ inputs.aurora_cluster_name }}
-          AWS_REGION:            ${{ inputs.aws_region }}
-          DB_SECRET_NAME:        ${{ steps.state.outputs.db_secret_arn }}
-          BASTION_INSTANCE_ID:   ${{ steps.state.outputs.bastion_id }}
+          PROXY_ACTIVE:        new
+          OLD_CLUSTER_ID:      ${{ steps.state.outputs.old_cluster_id }}
+          NEW_CLUSTER_ID:      ${{ inputs.aurora_cluster_name }}
+          AWS_REGION:          ${{ inputs.aws_region }}
+          DB_SECRET_NAME:      ${{ steps.state.outputs.db_secret_arn }}
+          BASTION_INSTANCE_ID: ${{ steps.state.outputs.bastion_id }}
 
       - name: Replication summary
         if: inputs.action == 'enable-replication'
@@ -123,12 +118,12 @@ jobs:
         if: inputs.action == 'rollback' && steps.state.outputs.rollback_source == ''
         run: bash scripts/pre_proxy_flip.sh
         env:
-          PROXY_ACTIVE:          old
-          OLD_CLUSTER_ID:        ${{ inputs.aurora_cluster_name }}-old1
-          NEW_CLUSTER_ID:        ${{ inputs.aurora_cluster_name }}
-          AWS_REGION:            ${{ inputs.aws_region }}
-          DB_SECRET_NAME:        ${{ steps.state.outputs.db_secret_arn }}
-          BASTION_INSTANCE_ID:   ${{ steps.state.outputs.bastion_id }}
+          PROXY_ACTIVE:        old
+          OLD_CLUSTER_ID:      ${{ inputs.aurora_cluster_name }}-old1
+          NEW_CLUSTER_ID:      ${{ inputs.aurora_cluster_name }}
+          AWS_REGION:          ${{ inputs.aws_region }}
+          DB_SECRET_NAME:      ${{ steps.state.outputs.db_secret_arn }}
+          BASTION_INSTANCE_ID: ${{ steps.state.outputs.bastion_id }}
 
       - name: Pre-flight skipped — partial rollback detected
         if: inputs.action == 'rollback' && steps.state.outputs.rollback_source != ''
@@ -139,7 +134,7 @@ jobs:
       - name: Terraform plan — rollback
         if: inputs.action == 'rollback'
         run: |
-          terraform -chdir="${{ env.TF_DIR }}" plan \
+          terraform plan \
             -var="source_cluster_arn=${{ inputs.source_cluster_arn }}" \
             -var="target_parameter_group_name=${{ inputs.target_parameter_group_name }}" \
             -var="deployment_name=${{ inputs.deployment_name }}" \
@@ -155,7 +150,7 @@ jobs:
       - name: Terraform plan — delete -new1 cluster after rollback
         if: inputs.action == 'delete-cluster-after-rollback'
         run: |
-          terraform -chdir="${{ env.TF_DIR }}" plan \
+          terraform plan \
             -var="source_cluster_arn=${{ inputs.source_cluster_arn }}" \
             -var="target_parameter_group_name=${{ inputs.target_parameter_group_name }}" \
             -var="deployment_name=${{ inputs.deployment_name }}" \
@@ -184,10 +179,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-bgonly-${{ inputs.action }}
-          path: ${{ env.TF_DIR }}/tfplan
+          path: tfplan
           retention-days: 1
 
-      # ── delete-old-cluster (happy path, no approval needed) ───────────────
+      # ── delete-old-cluster (happy path, AWS CLI, no approval) ────────────
       - name: Delete old blue cluster (happy path)
         if: inputs.action == 'delete-old-cluster'
         run: |
@@ -197,7 +192,6 @@ jobs:
             exit 1
           fi
           echo "Deleting old blue cluster: $OLD_ID"
-          # Delete instances first
           aws rds describe-db-instances \
             --filters "Name=db-cluster-id,Values=$OLD_ID" \
             --region "${{ inputs.aws_region }}" \
@@ -210,7 +204,6 @@ jobs:
               --skip-final-snapshot \
               --region "${{ inputs.aws_region }}" || true
           done
-          # Wait for instances then delete cluster
           aws rds wait db-instance-deleted \
             --filters "Name=db-cluster-id,Values=$OLD_ID" \
             --region "${{ inputs.aws_region }}" 2>/dev/null || true
@@ -245,27 +238,25 @@ jobs:
           tf_version:            ${{ env.TF_VERSION }}
           go_version:            ${{ env.GO_VERSION }}
           provider_version:      ${{ env.PROVIDER_VERSION }}
-          working_directory:     ${{ env.TF_DIR }}
 
       - name: Download plan artifact
         uses: actions/download-artifact@v4
         with:
           name: tfplan-bgonly-${{ inputs.action }}
-          path: ${{ env.TF_DIR }}
 
       - name: Terraform Apply
-        run: terraform -chdir="${{ env.TF_DIR }}" apply -auto-approve tfplan
+        run: terraform apply -auto-approve tfplan
 
       - name: Post-swap — promote restored cluster to read-write
         if: inputs.action == 'rollback'
         run: bash scripts/post_proxy_flip.sh
         env:
-          PROXY_ACTIVE:          old
-          OLD_CLUSTER_ID:        ${{ inputs.aurora_cluster_name }}
-          NEW_CLUSTER_ID:        ${{ inputs.aurora_cluster_name }}-new1
-          AWS_REGION:            ${{ inputs.aws_region }}
-          DB_SECRET_NAME:        ${{ needs.plan.outputs.db_secret_arn }}
-          BASTION_INSTANCE_ID:   ${{ needs.plan.outputs.bastion_id }}
+          PROXY_ACTIVE:        old
+          OLD_CLUSTER_ID:      ${{ inputs.aurora_cluster_name }}
+          NEW_CLUSTER_ID:      ${{ inputs.aurora_cluster_name }}-new1
+          AWS_REGION:          ${{ inputs.aws_region }}
+          DB_SECRET_NAME:      ${{ needs.plan.outputs.db_secret_arn }}
+          BASTION_INSTANCE_ID: ${{ needs.plan.outputs.bastion_id }}
 
       - name: Summary
         run: |
