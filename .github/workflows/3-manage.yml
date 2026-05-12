@@ -254,6 +254,21 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
 
+      - name: Remove B/G resource from state (lifecycle complete)
+        # After delete-old-cluster or delete-cluster-after-rollback there is nothing
+        # left for the provider to manage. Set enable_blue_green=false so Terraform
+        # calls Delete() → removes the resource from state (no-op in AWS, everything
+        # is already gone). Next bgonly-01-create-green run goes straight to Create().
+        if: inputs.action == 'delete-old-cluster' || inputs.action == 'delete-cluster-after-rollback'
+        run: |
+          terraform apply -auto-approve \
+            -var="source_cluster_arn=${{ inputs.source_cluster_arn }}" \
+            -var="target_parameter_group_name=${{ inputs.target_parameter_group_name }}" \
+            -var="deployment_name=${{ inputs.deployment_name }}" \
+            -var="green_engine_version=${{ inputs.green_engine_version }}" \
+            -var="aws_region=${{ inputs.aws_region }}" \
+            -var="enable_blue_green=false"
+
       - name: Post-swap — promote restored cluster to read-write
         if: inputs.action == 'rollback'
         run: bash scripts/post_proxy_flip.sh
@@ -279,15 +294,18 @@ jobs:
             } >> $GITHUB_STEP_SUMMARY
           elif [ "${{ inputs.action }}" = "delete-old-cluster" ]; then
             {
-              echo "## Old Blue Cluster Deleted"
-              echo "Happy-path cleanup complete — the old blue cluster has been removed."
+              echo "## Old Blue Cluster Deleted — Lifecycle Complete"
+              echo "The old blue cluster has been removed and the B/G resource has been cleared from state."
               echo ""
               echo "### Next Steps"
-              echo "- Set \`enable_blue_green = false\` and run **bgonly-01-create-green** to start a new upgrade cycle"
+              echo "- Run **bgonly-01-create-green** whenever you are ready for the next upgrade cycle"
             } >> $GITHUB_STEP_SUMMARY
           else
             {
-              echo "## -new1 Cluster Deleted"
-              echo "Rollback cleanup complete."
+              echo "## -new1 Cluster Deleted — Lifecycle Complete"
+              echo "Rollback cleanup complete. The B/G resource has been cleared from state."
+              echo ""
+              echo "### Next Steps"
+              echo "- Run **bgonly-01-create-green** whenever you are ready for the next upgrade cycle"
             } >> $GITHUB_STEP_SUMMARY
           fi

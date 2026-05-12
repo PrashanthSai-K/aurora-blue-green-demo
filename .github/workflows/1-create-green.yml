@@ -89,14 +89,6 @@ jobs:
             echo '```'
           } >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload plan artifact
-        if: inputs.action == 'apply'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan-bgonly-create
-          path: tfplan
-          retention-days: 1
-
   apply:
     name: "Apply — Create Green"
     needs: plan
@@ -122,13 +114,31 @@ jobs:
           go_version:            ${{ env.GO_VERSION }}
           provider_version:      ${{ env.PROVIDER_VERSION }}
 
-      - name: Download plan artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan-bgonly-create
+      - name: Reset previous cycle state (safety net — normally a no-op)
+        # bgonly-03-manage clears state after delete-old-cluster / delete-cluster-after-rollback,
+        # so this step is usually a no-op. It guards against cases where state cleanup was
+        # skipped (manual intervention, failed workflow) — sets count=0, Delete() in AWS is
+        # a no-op since the deployment object is already gone.
+        run: |
+          terraform apply -auto-approve \
+            -var="source_cluster_arn=${{ inputs.source_cluster_arn }}" \
+            -var="target_parameter_group_name=${{ inputs.target_parameter_group_name }}" \
+            -var="deployment_name=${{ inputs.deployment_name }}" \
+            -var="green_engine_version=${{ inputs.green_engine_version }}" \
+            -var="aws_region=${{ inputs.aws_region }}" \
+            -var="enable_blue_green=false"
 
       - name: Terraform Apply — Create Green
-        run: terraform apply -auto-approve tfplan
+        run: |
+          terraform apply -auto-approve \
+            -var="source_cluster_arn=${{ inputs.source_cluster_arn }}" \
+            -var="target_parameter_group_name=${{ inputs.target_parameter_group_name }}" \
+            -var="deployment_name=${{ inputs.deployment_name }}" \
+            -var="green_engine_version=${{ inputs.green_engine_version }}" \
+            -var="aws_region=${{ inputs.aws_region }}" \
+            -var="enable_blue_green=true" \
+            -var="trigger_switchover=false" \
+            -var="trigger_rollback=false"
 
       - name: Output Summary
         run: |
