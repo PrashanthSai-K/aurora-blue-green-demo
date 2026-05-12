@@ -185,8 +185,24 @@ jobs:
             -out=tfplan \
             2>&1 | tee /tmp/plan-output.txt
 
+      # ── delete-old-cluster plan ───────────────────────────────────────────
+      - name: Terraform plan — delete old blue cluster (happy path)
+        if: inputs.action == 'delete-old-cluster'
+        run: |
+          terraform plan \
+            -var="source_cluster_arn=${{ inputs.source_cluster_arn }}" \
+            -var="target_parameter_group_name=${{ inputs.target_parameter_group_name }}" \
+            -var="deployment_name=${{ inputs.deployment_name }}" \
+            -var="green_engine_version=${{ inputs.green_engine_version }}" \
+            -var="aws_region=${{ inputs.aws_region }}" \
+            -var="enable_blue_green=true" \
+            -var="trigger_switchover=true" \
+            -var="delete_old_cluster=true" \
+            -out=tfplan \
+            2>&1 | tee /tmp/plan-output.txt
+
       - name: Plan summary
-        if: inputs.action == 'rollback' || inputs.action == 'delete-cluster-after-rollback'
+        if: inputs.action == 'rollback' || inputs.action == 'delete-cluster-after-rollback' || inputs.action == 'delete-old-cluster'
         run: |
           {
             echo "## Plan — ${{ inputs.action }}"
@@ -197,49 +213,18 @@ jobs:
           } >> $GITHUB_STEP_SUMMARY
 
       - name: Upload plan artifact
-        if: inputs.action == 'rollback' || inputs.action == 'delete-cluster-after-rollback'
+        if: inputs.action == 'rollback' || inputs.action == 'delete-cluster-after-rollback' || inputs.action == 'delete-old-cluster'
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-bgonly-${{ inputs.action }}
           path: tfplan
           retention-days: 1
 
-      # ── delete-old-cluster (happy path, AWS CLI, no approval) ────────────
-      - name: Delete old blue cluster (happy path)
-        if: inputs.action == 'delete-old-cluster'
-        run: |
-          OLD_ID="${{ steps.state.outputs.old_cluster_id }}"
-          if [ -z "$OLD_ID" ] || [ "$OLD_ID" = "null" ]; then
-            echo "ERROR: old_blue_cluster_id not in state — run bgonly-02-switchover first."
-            exit 1
-          fi
-          echo "Deleting old blue cluster: $OLD_ID"
-          aws rds describe-db-instances \
-            --filters "Name=db-cluster-id,Values=$OLD_ID" \
-            --region "${{ inputs.aws_region }}" \
-            --query 'DBInstances[*].DBInstanceIdentifier' \
-            --output text | tr '\t' '\n' | while read -r inst; do
-            [ -z "$inst" ] && continue
-            echo "Deleting instance: $inst"
-            aws rds delete-db-instance \
-              --db-instance-identifier "$inst" \
-              --skip-final-snapshot \
-              --region "${{ inputs.aws_region }}" || true
-          done
-          aws rds wait db-instance-deleted \
-            --filters "Name=db-cluster-id,Values=$OLD_ID" \
-            --region "${{ inputs.aws_region }}" 2>/dev/null || true
-          aws rds delete-db-cluster \
-            --db-cluster-identifier "$OLD_ID" \
-            --skip-final-snapshot \
-            --region "${{ inputs.aws_region }}"
-          echo "Old cluster $OLD_ID deleted."
-
-  # ── Apply job (rollback / delete-cluster-after-rollback) ─────────────────
+  # ── Apply job (rollback / delete-cluster-after-rollback / delete-old-cluster) ──
   apply:
     name: "Apply — ${{ inputs.action }}"
     needs: plan
-    if: inputs.action == 'rollback' || inputs.action == 'delete-cluster-after-rollback'
+    if: inputs.action == 'rollback' || inputs.action == 'delete-cluster-after-rollback' || inputs.action == 'delete-old-cluster'
     runs-on: ubuntu-latest
     environment: aurora-test
 
@@ -291,6 +276,14 @@ jobs:
               echo "| Pending delete | \`${{ inputs.aurora_cluster_name }}-new1\` |"
               echo ""
               echo "Run **delete-cluster-after-rollback** to clean up the -new1 cluster."
+            } >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ inputs.action }}" = "delete-old-cluster" ]; then
+            {
+              echo "## Old Blue Cluster Deleted"
+              echo "Happy-path cleanup complete — the old blue cluster has been removed."
+              echo ""
+              echo "### Next Steps"
+              echo "- Set \`enable_blue_green = false\` and run **bgonly-01-create-green** to start a new upgrade cycle"
             } >> $GITHUB_STEP_SUMMARY
           else
             {

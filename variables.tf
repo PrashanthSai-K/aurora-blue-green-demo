@@ -20,13 +20,7 @@ variable "deployment_name" {
 }
 
 variable "green_engine_version" {
-  description = "Aurora MySQL engine version for green (leave empty to use same as source cluster)."
-  type        = string
-  default     = ""
-}
-
-variable "aurora_engine_version" {
-  description = "Fallback engine version — used when green_engine_version is empty."
+  description = "Aurora MySQL engine version for green. Leave empty to use the same version as the source cluster (no engine upgrade)."
   type        = string
   default     = ""
 }
@@ -45,6 +39,12 @@ variable "trigger_switchover" {
 
 variable "trigger_rollback" {
   description = "Set true to perform a name-swap rollback — restores the original cluster endpoint."
+  type        = bool
+  default     = false
+}
+
+variable "delete_old_cluster" {
+  description = "Set true (after switchover, happy path) to delete the old blue cluster via the provider."
   type        = bool
   default     = false
 }

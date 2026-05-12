@@ -17,13 +17,14 @@ resource "aurora-bluegreen_deployment" "main" {
 
   deployment_name             = var.deployment_name
   source_cluster_arn          = var.source_cluster_arn
-  target_engine_version       = var.green_engine_version != "" ? var.green_engine_version : var.aurora_engine_version
+  target_engine_version       = var.green_engine_version != "" ? var.green_engine_version : null
   target_parameter_group_name = var.target_parameter_group_name
 
   trigger_switchover    = var.trigger_switchover
   delete_source_cluster = var.delete_source_cluster
 
   trigger_rollback              = var.trigger_rollback
+  delete_old_cluster            = var.delete_old_cluster
   delete_cluster_after_rollback = var.delete_cluster_after_rollback
 
   create_timeout_minutes     = 90

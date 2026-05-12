@@ -168,6 +168,10 @@ type BlueGreenDeploymentModel struct {
 	// rollback_completed: computed true after name-swap finishes.
 	RollbackCompleted types.Bool `tfsdk:"rollback_completed"`
 
+	// delete_old_cluster: set true (in a separate apply after switchover, happy path)
+	// to delete the old blue cluster (old_source_cluster_id) via the provider.
+	DeleteOldCluster types.Bool `tfsdk:"delete_old_cluster"`
+
 	// delete_cluster_after_rollback: set true (in a separate apply after rollback)
 	// to delete the <orig>-new1 cluster.
 	DeleteClusterAfterRollback types.Bool `tfsdk:"delete_cluster_after_rollback"`
@@ -384,6 +388,13 @@ func (r *BlueGreenDeploymentResource) Schema(_ context.Context, _ resource.Schem
 				Description: "True after name-swap rollback finishes. The original cluster endpoint is restored.",
 			},
 
+			"delete_old_cluster": schema.BoolAttribute{
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(false),
+				Description: "Set true (in a separate apply after switchover) to delete the old blue cluster. Use on the happy path when no rollback is needed.",
+			},
+
 			"delete_cluster_after_rollback": schema.BoolAttribute{
 				Optional:    true,
 				Computed:    true,
@@ -418,6 +429,13 @@ func (r *BlueGreenDeploymentResource) ModifyPlan(ctx context.Context, req resour
 	var plan BlueGreenDeploymentModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// delete_old_cluster: provider clears old_source_cluster_id after deleting the cluster.
+	if plan.DeleteOldCluster.ValueBool() {
+		plan.OldSourceClusterID = types.StringUnknown()
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 		return
 	}
 
@@ -512,6 +530,7 @@ func (r *BlueGreenDeploymentResource) Create(ctx context.Context, req resource.C
 	plan.DeploymentDeleted = types.BoolValue(false)
 	plan.TriggerRollback = types.BoolValue(false)
 	plan.RollbackCompleted = types.BoolValue(false)
+	plan.DeleteOldCluster = types.BoolValue(false)
 	plan.DeleteClusterAfterRollback = types.BoolValue(false)
 	plan.RollbackSourceClusterID = types.StringValue("")
 
@@ -764,6 +783,33 @@ func (r *BlueGreenDeploymentResource) Update(ctx context.Context, req resource.U
 		tflog.Info(ctx, "Post-switchover: B/G deployment object deleted — old cluster still available for rollback")
 	}
 
+	// ── Section 3.5: Delete old blue cluster (happy path, no rollback) ─────────
+	// Triggered by delete_old_cluster=true after switchover.
+	// Deletes the old blue cluster and clears old_source_cluster_id from state.
+	if plan.DeleteOldCluster.ValueBool() && !state.DeleteOldCluster.ValueBool() {
+		oldClusterID := state.OldSourceClusterID.ValueString()
+		if oldClusterID == "" {
+			resp.Diagnostics.AddError(
+				"Cannot delete old cluster",
+				"old_source_cluster_id is empty — run trigger_switchover=true first.",
+			)
+			return
+		}
+		tflog.Info(ctx, "Deleting old blue cluster (happy path)", map[string]any{"cluster_id": oldClusterID})
+		resp.Diagnostics.Append(r.deleteClusterAndInstances(ctx, oldClusterID)...)
+		if resp.Diagnostics.HasError() {
+			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+			return
+		}
+		state.OldSourceClusterID = types.StringNull()
+		state.DeleteOldCluster = types.BoolValue(true)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		tflog.Info(ctx, "Old blue cluster deleted", map[string]any{"cluster_id": oldClusterID})
+	}
+
 	// ── Section 4: Name-swap rollback ────────────────────────────────────────
 	// Restores the original cluster endpoint by renaming:
 	//   new prod (<orig>)      → <orig>-new1
@@ -1005,6 +1051,9 @@ func (r *BlueGreenDeploymentResource) Update(ctx context.Context, req resource.U
 	state.RetainOldCluster = plan.RetainOldCluster
 	state.EnableReverseReplication = plan.EnableReverseReplication
 	state.RDSProxyName = plan.RDSProxyName
+	if !state.DeleteOldCluster.ValueBool() {
+		state.DeleteOldCluster = plan.DeleteOldCluster
+	}
 	if !state.DeleteClusterAfterRollback.ValueBool() {
 		state.DeleteClusterAfterRollback = plan.DeleteClusterAfterRollback
 	}
@@ -1116,6 +1165,7 @@ func (r *BlueGreenDeploymentResource) ImportState(ctx context.Context, req resou
 		DeploymentDeleted:          types.BoolValue(false),
 		TriggerRollback:            types.BoolValue(false),
 		RollbackCompleted:          types.BoolValue(false),
+		DeleteOldCluster:           types.BoolValue(false),
 		DeleteClusterAfterRollback: types.BoolValue(false),
 		RollbackSourceClusterID:    types.StringValue(""),
 	}
