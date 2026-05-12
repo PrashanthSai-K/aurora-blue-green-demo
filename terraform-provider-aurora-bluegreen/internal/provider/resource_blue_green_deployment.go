@@ -238,10 +238,12 @@ func (r *BlueGreenDeploymentResource) Schema(_ context.Context, _ resource.Schem
 				},
 			},
 			"target_engine_version": schema.StringAttribute{
-				Required:    true,
-				Description: "Target engine version for the green cluster (e.g. 8.0.mysql_aurora.3.10.3).",
+				Optional:    true,
+				Computed:    true,
+				Description: "Target engine version for the green cluster (e.g. 8.0.mysql_aurora.3.10.3). Leave blank to use the same version as the source cluster.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"target_parameter_group_name": schema.StringAttribute{
@@ -462,16 +464,35 @@ func (r *BlueGreenDeploymentResource) Create(ctx context.Context, req resource.C
 		return
 	}
 
+	// If target_engine_version is not set, look it up from the source cluster so
+	// we send a valid non-empty string to the AWS API (same version = no engine upgrade).
+	targetVersion := plan.TargetEngineVersion.ValueString()
+	if targetVersion == "" {
+		sourceClusterID := clusterIDFromARN(plan.SourceClusterARN.ValueString())
+		desc, descErr := r.clients.RDS.DescribeDBClusters(ctx, &rds.DescribeDBClustersInput{
+			DBClusterIdentifier: aws.String(sourceClusterID),
+		})
+		if descErr != nil || len(desc.DBClusters) == 0 {
+			resp.Diagnostics.AddError(
+				"Failed to resolve target_engine_version",
+				fmt.Sprintf("target_engine_version was not set and could not look up source cluster %q: %v", sourceClusterID, descErr),
+			)
+			return
+		}
+		targetVersion = aws.ToString(desc.DBClusters[0].EngineVersion)
+		plan.TargetEngineVersion = types.StringValue(targetVersion)
+	}
+
 	tflog.Info(ctx, "Creating Aurora Blue/Green deployment", map[string]any{
 		"name":           plan.DeploymentName.ValueString(),
 		"source_arn":     plan.SourceClusterARN.ValueString(),
-		"target_version": plan.TargetEngineVersion.ValueString(),
+		"target_version": targetVersion,
 	})
 
 	output, err := r.clients.RDS.CreateBlueGreenDeployment(ctx, &rds.CreateBlueGreenDeploymentInput{
 		BlueGreenDeploymentName:           aws.String(plan.DeploymentName.ValueString()),
 		Source:                            aws.String(plan.SourceClusterARN.ValueString()),
-		TargetEngineVersion:               aws.String(plan.TargetEngineVersion.ValueString()),
+		TargetEngineVersion:               aws.String(targetVersion),
 		TargetDBClusterParameterGroupName: aws.String(plan.TargetParameterGroupName.ValueString()),
 	})
 	if err != nil {
@@ -1488,7 +1509,7 @@ func (r *BlueGreenDeploymentResource) deleteClusterAndInstances(ctx context.Cont
 
 	_, delClusterErr := r.clients.RDS.DeleteDBCluster(ctx, &rds.DeleteDBClusterInput{
 		DBClusterIdentifier: aws.String(clusterID),
-		SkipFinalSnapshot:   aws.Bool(false),
+		SkipFinalSnapshot:   aws.Bool(true),
 	})
 	if delClusterErr != nil && !isNotFoundError(delClusterErr) {
 		diags.AddError(
