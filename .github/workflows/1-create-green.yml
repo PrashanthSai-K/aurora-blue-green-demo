@@ -64,8 +64,48 @@ jobs:
           go_version:            ${{ env.GO_VERSION }}
           provider_version:      ${{ env.PROVIDER_VERSION }}
 
-      - name: Terraform Plan
+      - name: Check current state
+        id: state_check
         run: |
+          OLD_CLUSTER=$(terraform output -raw old_blue_cluster_id 2>/dev/null || echo "")
+          STATUS=$(terraform output -raw blue_green_status 2>/dev/null || echo "")
+          echo "old_cluster=${OLD_CLUSTER}"   >> $GITHUB_OUTPUT
+          echo "status=${STATUS}"             >> $GITHUB_OUTPUT
+          echo "Old cluster in state : ${OLD_CLUSTER:-<none>}"
+          echo "B/G status in state  : ${STATUS:-<none>}"
+
+      - name: Safety check — block if a cycle is still active
+        run: |
+          OLD_CLUSTER="${{ steps.state_check.outputs.old_cluster }}"
+          STATUS="${{ steps.state_check.outputs.status }}"
+          if [ -n "$OLD_CLUSTER" ] && [ "$OLD_CLUSTER" != "null" ]; then
+            echo "ERROR: B/G cycle still active."
+            echo "  old_blue_cluster_id = $OLD_CLUSTER"
+            echo "  status              = $STATUS"
+            echo ""
+            echo "The old cluster is still tracked in state — you have not finished the current cycle."
+            echo "Options:"
+            echo "  Happy path : run bgonly-03-manage → delete-old-cluster"
+            echo "  Rollback   : run bgonly-03-manage → rollback, then delete-cluster-after-rollback"
+            exit 1
+          fi
+          echo "No active B/G cycle detected — safe to proceed."
+
+      - name: Plan — what the apply will do
+        run: |
+          NEEDS_RESET=$(terraform state list 2>/dev/null | grep -c "aurora-bluegreen_deployment" || echo "0")
+          if [ "$NEEDS_RESET" -gt "0" ]; then
+            echo "Existing completed cycle found in state — apply will reset then create."
+            terraform plan \
+              -var="source_cluster_arn=${{ inputs.source_cluster_arn }}" \
+              -var="target_parameter_group_name=${{ inputs.target_parameter_group_name }}" \
+              -var="deployment_name=${{ inputs.deployment_name }}" \
+              -var="green_engine_version=${{ inputs.green_engine_version }}" \
+              -var="aws_region=${{ inputs.aws_region }}" \
+              -var="enable_blue_green=false" \
+              2>&1 | tail -5
+            echo "--- then ---"
+          fi
           terraform plan \
             -var="source_cluster_arn=${{ inputs.source_cluster_arn }}" \
             -var="target_parameter_group_name=${{ inputs.target_parameter_group_name }}" \
@@ -75,7 +115,6 @@ jobs:
             -var="enable_blue_green=true" \
             -var="trigger_switchover=false" \
             -var="trigger_rollback=false" \
-            -out=tfplan \
             2>&1 | tee /tmp/plan-output.txt
 
       - name: Plan Summary
@@ -113,6 +152,23 @@ jobs:
           tf_version:            ${{ env.TF_VERSION }}
           go_version:            ${{ env.GO_VERSION }}
           provider_version:      ${{ env.PROVIDER_VERSION }}
+
+      - name: Safety check — block if a cycle is still active
+        run: |
+          OLD_CLUSTER=$(terraform output -raw old_blue_cluster_id 2>/dev/null || echo "")
+          STATUS=$(terraform output -raw blue_green_status 2>/dev/null || echo "")
+          if [ -n "$OLD_CLUSTER" ] && [ "$OLD_CLUSTER" != "null" ]; then
+            echo "ERROR: B/G cycle still active."
+            echo "  old_blue_cluster_id = $OLD_CLUSTER"
+            echo "  status              = $STATUS"
+            echo ""
+            echo "The old cluster is still tracked in state — you have not finished the current cycle."
+            echo "Options:"
+            echo "  Happy path : run bgonly-03-manage → delete-old-cluster"
+            echo "  Rollback   : run bgonly-03-manage → rollback, then delete-cluster-after-rollback"
+            exit 1
+          fi
+          echo "No active B/G cycle detected — safe to proceed."
 
       - name: Reset previous cycle state (safety net — normally a no-op)
         # bgonly-03-manage clears state after delete-old-cluster / delete-cluster-after-rollback,
